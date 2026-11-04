@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { istDate } from '@/lib/core';
+import { runCoach } from '@/lib/coach';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -8,7 +9,8 @@ const KEEP_PROOF_DAYS = 14;
 
 /**
  * Runs once a day just after midnight IST (vercel.json). Closes the finished day(s) —
- * streaks, removals, trial progress — and deletes proof files older than two weeks.
+ * streaks, removals, trial progress — then lets the Coach fill open seats, rule on waiting
+ * reasons and set today's personal tasks, and finally deletes proof files older than two weeks.
  */
 export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET;
@@ -23,6 +25,8 @@ export async function GET(req: Request) {
 
   const closed = await db.rpc('close_pending');
   if (closed.error) return Response.json({ error: closed.error.message }, { status: 500 });
+
+  const coach = await runCoach(db);
 
   const cutoff = istDate(Date.now() - KEEP_PROOF_DAYS * 86400000);
   let pruned = 0;
@@ -43,5 +47,5 @@ export async function GET(req: Request) {
     pruned += data.length;
   }
 
-  return Response.json({ ok: true, scored: closed.data, pruned });
+  return Response.json({ ok: true, scored: closed.data, coach, pruned });
 }

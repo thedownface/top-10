@@ -22,7 +22,10 @@ export function Today() {
   const tasks: Task[] = [
     ...CORE_TASKS,
     ...(isAthlete
-      ? app.extras.map((e) => ({ key: 'x' + e.id, num: '+', title: e.title, proof: e.proof, kind: 'media' as const, extra: true, maxClip: 30 }))
+      ? app.extras.map((e) => ({
+          key: 'x' + e.id, num: '+', title: e.title, proof: e.proof, kind: 'media' as const, extra: true, maxClip: 30,
+          from: e.source === 'coach' ? (e.user_id ? 'From the Coach · just for you' : 'From the Coach · today') : 'From Admin · today',
+        }))
       : []),
   ];
   const locked = tasksLocked(now);
@@ -95,7 +98,7 @@ export function Today() {
                 <button key={t.key} className="task-row" onClick={() => app.openTask(t)}>
                   <span className="num" style={{ fontSize: 26 }}>{t.num}</span>
                   <span style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
-                    {t.extra && <span className="label" style={{ color: C.RT }}>From Admin · today</span>}
+                    {t.from && <span className="label" style={{ color: C.RT }}>{t.from}</span>}
                     <span style={{ fontSize: 17, fontWeight: 700 }}>{t.title}</span>
                     <span style={{ fontSize: 13, color: C.MUTE, lineHeight: 1.35, textWrap: 'pretty' }}>{t.proof}</span>
                   </span>

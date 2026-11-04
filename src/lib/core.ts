@@ -74,6 +74,8 @@ export type Task = {
   textLabel?: string;
   ph?: string;
   extra?: boolean;
+  /** Who set an extra task, shown above its title. */
+  from?: string;
   maxClip: number;
 };
 
@@ -126,7 +128,7 @@ export type TaskLog = {
   task_key: string;
   status: 'done' | 'review' | 'excused' | 'rejected';
 };
-export type ExtraTask = { id: number; for_date: string; title: string; proof: string };
+export type ExtraTask = { id: number; for_date: string; title: string; proof: string; user_id: string | null; source: 'admin' | 'coach' };
 
 export function errMsg(e: unknown): string {
   if (e && typeof e === 'object' && 'message' in e) return String((e as { message: unknown }).message);

@@ -93,7 +93,7 @@ export default function App() {
       client.from('settings').select('season_name, season_start').eq('id', 1).single(),
       client.rpc('the_ten'),
       client.from('task_logs').select('id, task_key, status').eq('user_id', uid).eq('log_date', d),
-      client.from('extra_tasks').select('id, for_date, title, proof').eq('for_date', d).order('id'),
+      client.from('extra_tasks').select('id, for_date, title, proof, user_id, source').eq('for_date', d).order('id'),
       client.from('profiles').select('id, name, training, trial_days, trial_done_at, trial_start')
         .eq('role', 'queue')
         .order('trial_done_at', { ascending: true, nullsFirst: false })

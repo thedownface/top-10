@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { sb } from '@/lib/supabase';
 import { C, CORE_TASKS, errMsg, first, REASONS, roman, type Task } from '@/lib/core';
 import { checkProof, uploadProof } from '@/lib/media';
+import { coachCheck } from '@/lib/coachClient';
 import { useApp } from './ctx';
 import { Camera, Check, Close, Send } from './Icons';
 
@@ -23,6 +24,7 @@ export function ProofSheet({ task, initialMode, onClose, onLocked }: Props) {
   const [reason, setReason] = useState<number | null>(null);
   const [adminOnly, setAdminOnly] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [water, setWater] = useState(0);
   const input = useRef<HTMLInputElement>(null);
   const waterKey = `t10-water-${today}`;
@@ -72,13 +74,22 @@ export function ProofSheet({ task, initialMode, onClose, onLocked }: Props) {
         p_water: task.kind === 'water' ? water : null,
       });
       if (error) throw error;
-      const n = CORE_TASKS.filter((t) => t.key === task.key || logs[t.key]?.status === 'done').length;
+      setChecking(true);
+      const coach = await coachCheck(task.key);
       await refresh();
-      onLocked(task.extra ? 'Extra task locked.' : n === 6 ? 'All six locked. Your piece is in the Figure.' : `Piece locked. ${n} of 6 today.`);
+      if (coach?.verdict === 'reject') {
+        // The Coach bounced the note; the log is gone, so the athlete can fix it and lock again.
+        flash(`Coach: ${coach.feedback || 'That note doesn’t show the task.'} Fix it and lock again.`);
+        return;
+      }
+      const n = CORE_TASKS.filter((t) => t.key === task.key || logs[t.key]?.status === 'done').length;
+      const msg = task.extra ? 'Extra task locked.' : n === 6 ? 'All six locked. Your piece is in the Figure.' : `Piece locked. ${n} of 6 today.`;
+      onLocked(coach?.feedback ? `${msg} Coach: ${coach.feedback}` : msg);
     } catch (e) {
       flash(errMsg(e));
     } finally {
       setBusy(false);
+      setChecking(false);
     }
   };
 
@@ -92,12 +103,19 @@ export function ProofSheet({ task, initialMode, onClose, onLocked }: Props) {
         p_task: task.key, p_reason: reason, p_note: text.trim(), p_media: media, p_admin_only: adminOnly,
       });
       if (error) throw error;
+      setChecking(true);
+      const coach = await coachCheck(task.key);
       await refresh();
-      onLocked('Sent to the Admin. Reply within 24 hours.');
+      onLocked(
+        coach?.verdict === 'accept' ? `Coach accepted: day excused. ${coach.feedback}`
+          : coach?.verdict === 'reject' ? `Coach rejected the reason · 1 strike. ${coach.feedback}`
+            : 'Sent to the Admin. Reply within 24 hours.',
+      );
     } catch (e) {
       flash(errMsg(e));
     } finally {
       setBusy(false);
+      setChecking(false);
     }
   };
 
@@ -110,7 +128,7 @@ export function ProofSheet({ task, initialMode, onClose, onLocked }: Props) {
       <div data-screen-label="09 Log proof sheet" className="sheet" role="dialog" aria-modal="true" aria-label={task.title}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span className="label-strong" style={{ color: C.MUTE }}>
-            {task.extra ? 'From Admin · ' : `Task ${roman(Number(task.key))} · `}{log ? 'log by 10:00 pm' : 'reason by 11:59 pm'}
+            {task.extra ? `${task.from ?? 'Extra'} · ` : `Task ${roman(Number(task.key))} · `}{log ? 'log by 10:00 pm' : 'reason by 11:59 pm'}
           </span>
           <button className="icon-btn" style={{ marginRight: -10 }} aria-label="Close" onClick={onClose}><Close /></button>
         </div>
@@ -174,7 +192,7 @@ export function ProofSheet({ task, initialMode, onClose, onLocked }: Props) {
               </label>
             )}
             <button className={'bar-btn' + (okLog && !busy ? '' : ' dim')} onClick={submitLog} aria-disabled={!okLog || busy}>
-              <span>{busy ? 'Locking…' : 'Lock this piece'}</span><Check size={20} />
+              <span>{checking ? 'Coach is checking…' : busy ? 'Locking…' : 'Lock this piece'}</span><Check size={20} />
             </button>
             <button className="link-btn red" onClick={() => switchMode('miss')}>I couldn’t complete this</button>
           </>
@@ -220,9 +238,9 @@ export function ProofSheet({ task, initialMode, onClose, onLocked }: Props) {
                 <span style={{ width: 20, height: 20, background: adminOnly ? C.RED : C.INK }} />
               </span>
             </button>
-            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.45, color: C.BODY }}>Admin reviews within 24 hours. Accepted: day excused, streak paused. Rejected: 1 strike.</p>
+            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.45, color: C.BODY }}>The Coach rules on it straight away; hard cases go to the Admin. Accepted: day excused, streak paused. Rejected: 1 strike.</p>
             <button className={'bar-btn' + (okMiss && !busy ? '' : ' dim')} onClick={submitMiss} aria-disabled={!okMiss || busy}>
-              <span>{busy ? 'Sending…' : 'Send for review'}</span><Send />
+              <span>{checking ? 'Coach is reviewing…' : busy ? 'Sending…' : 'Send for review'}</span><Send />
             </button>
             {initialMode === 'log' && <button className="link-btn" onClick={() => switchMode('log')}>Back to logging</button>}
           </>

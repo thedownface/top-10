@@ -17,6 +17,7 @@ type Review = {
   media_path: string | null;
   admin_only: boolean;
   created_at: string;
+  ai_note: string | null;
   profiles: { name: string; seat: number | null; role: string } | null;
 };
 type QueueRow = { id: string; name: string; training: string; trial_days: number; trial_done_at: string | null };
@@ -47,8 +48,8 @@ export default function Admin() {
       client.from('profiles').select('id, name, training, trial_days, trial_done_at').eq('role', 'queue')
         .order('trial_done_at', { ascending: true, nullsFirst: false }).order('trial_days', { ascending: false }).order('created_at').limit(200),
       client.from('invites').select('code, seat, created_at').is('used_by', null).is('used_at', null).order('seat'),
-      client.from('task_logs').select('id, log_date, task_key, note, reason, media_path, admin_only, created_at, profiles(name, seat, role)').eq('status', 'review').order('created_at').limit(100),
-      client.from('extra_tasks').select('id, for_date, title, proof').gte('for_date', istDate(Date.now() - 14 * 86400000)).order('id'),
+      client.from('task_logs').select('id, log_date, task_key, note, reason, media_path, admin_only, created_at, ai_note, profiles(name, seat, role)').eq('status', 'review').order('created_at').limit(100),
+      client.from('extra_tasks').select('id, for_date, title, proof, user_id, source').gte('for_date', istDate(Date.now() - 14 * 86400000)).order('id'),
       client.from('settings').select('season_name, season_start').eq('id', 1).single(),
     ]);
     const err = t.error || q.error || inv.error || rv.error || ex.error || st.error;
@@ -127,6 +128,7 @@ export default function Admin() {
                 </span>
                 <strong style={{ fontSize: 17 }}>{r.profiles?.name} · {taskTitle(r.task_key, allExtras)}</strong>
                 <span style={{ fontSize: 14 }}><strong>{REASONS[r.reason ?? 4]}:</strong> {r.note}</span>
+                {r.ai_note && <span className="small">Coach passed this to you: {r.ai_note}</span>}
                 {r.media_path && (
                   <button className="link-btn" style={{ minHeight: 28, padding: 0, fontSize: 14 }} onClick={async () => {
                     const { data, error } = await sb().storage.from('proofs').createSignedUrl(r.media_path!, 300);
@@ -200,10 +202,15 @@ export default function Admin() {
 
         {/* extras */}
         <section className="admin-section">
-          <h2 className="display d26 rule-bottom" style={{ paddingBottom: 8 }}>Extra task for today</h2>
+          <h2 className="display d26 rule-bottom" style={{ paddingBottom: 8 }}>Today’s extra tasks</h2>
           {extras.map((e) => (
             <div key={e.id} className="admin-row">
-              <span><strong>{e.title}</strong> <span className="small">· {e.proof}</span></span>
+              <span>
+                <span className="label-strong" style={{ color: C.RT, display: 'block' }}>
+                  {e.source === 'coach' ? 'Coach' : 'Admin'} · {e.user_id ? `for ${first(ten.find((x) => x.user_id === e.user_id)?.name ?? 'one athlete')}` : 'for all of the Ten'}
+                </span>
+                <strong>{e.title}</strong> <span className="small">· {e.proof}</span>
+              </span>
               <button className="chip-btn" disabled={busy} onClick={() => run(async () => {
                 if (!window.confirm('Delete this extra task? Proof already logged for it is kept.')) return;
                 must(await sb().from('extra_tasks').delete().eq('id', e.id));
@@ -271,8 +278,15 @@ export default function Admin() {
                 const n = must(await sb().rpc('close_pending'));
                 return Number(n) ? `Closed pending days · ${n} members scored.` : 'Every past day is already closed.';
               })}>Close past days now</button>
+              <button className="chip-btn" disabled={busy} onClick={() => run(async () => {
+                const { data: { session } } = await sb().auth.getSession();
+                const res = await fetch('/api/coach/run', { method: 'POST', headers: { Authorization: `Bearer ${session?.access_token ?? ''}` } });
+                const out = await res.json();
+                if (!res.ok) throw new Error(out.error || 'The Coach could not run.');
+                return `Coach: ${out.planned} tasks set · ${out.reviewed} reasons ruled · ${out.seated} seats filled.`;
+              })}>Run the Coach now</button>
             </div>
-            <p className="small" style={{ margin: 0 }}>Days close automatically after midnight IST. Use the button only if the nightly job was missed.</p>
+            <p className="small" style={{ margin: 0 }}>Days close automatically after midnight IST, then the Coach seats the queue, rules on waiting reasons and sets each athlete’s personal task. The buttons run the same steps now.</p>
           </section>
         )}
       </div>

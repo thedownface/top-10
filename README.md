@@ -35,6 +35,7 @@ This is an installable mobile web app (PWA). It runs on **Vercel Hobby** and **S
    | `SUPABASE_SERVICE_ROLE_KEY` | service role / secret key (server only) |
    | `CRON_SECRET` | any long random string, e.g. `openssl rand -hex 32` |
    | `NEXT_PUBLIC_GOOGLE_AUTH` | `true` or `false` |
+   | `DEEPSEEK_API_KEY` | from [platform.deepseek.com](https://platform.deepseek.com) → API keys (server only). Turns on the Coach. |
 
 3. Deploy. Then go back to Supabase **Authentication → URL Configuration** and set **Site URL** to your Vercel URL (for example `https://top10.vercel.app`). Add the same URL under **Redirect URLs**.
 
@@ -57,9 +58,16 @@ Open the profile icon (top right) and choose **Open the Admin desk**, or go to `
 
 To seed the first Ten, create a code for each seat and send it to each athlete privately. They choose **I hold a seat** during onboarding and enter the code.
 
-### 4. Hero photo (optional)
+### 4. The Coach (AI agent)
 
-Export `assets/puzzle-figure.jpeg` from the Claude Design project and save it as `public/hero.jpg`. Without it, the welcome screen shows the floating puzzle pieces on their own.
+With `DEEPSEEK_API_KEY` set, an AI agent called **the Coach** runs most of the day-to-day work the Admin would otherwise do ([src/lib/coach.ts](src/lib/coach.ts)):
+
+- **Sets tasks.** Each night, after the day closes, it gives every athlete one personal extra task based on their goal and training, and posts a note in the Ten's chat. The task is visible only to that athlete and counts toward their full day.
+- **Checks proof.** When someone logs training, reading or helping, the Coach reads the note straight away. A note that doesn't show the task (for example just "done") is bounced, and the athlete logs it again before 10 pm. DeepSeek's API reads text only, so the Coach judges the written note; the app still requires the photo or clip.
+- **Rules on reasons.** A missed-task reason gets an instant accept (day excused) or reject (one strike). Serious or sensitive cases, such as a bereavement, go to the Admin desk with the Coach's note.
+- **Fills seats.** Each night it gives every open seat to the next person who finished the 7-day trial, first in first seated. Seats still go to people who lose them under the rules: three strikes, or a miss with no reason.
+
+The Admin desk keeps every manual control as an override. **Run the Coach now** does the nightly steps immediately, which is useful for testing. If DeepSeek is down or the key is missing, logs are accepted as normal and reasons wait for the Admin.
 
 ## The rules, and where they are enforced
 
@@ -67,7 +75,7 @@ All rules run inside Postgres functions ([supabase/schema.sql](supabase/schema.s
 
 - Tasks I–V and Admin extras lock at **10:00 pm IST**. The EOD post and missed-task reasons are open until **11:59 pm IST**.
 - Each task needs its proof: a photo or clip (15 s, or 30 s for extras), a note, 8 glasses of water, or the name of the athlete you helped.
-- A reason needs a category, an explanation and proof. The Admin accepts it (day excused, streak paused) or rejects it (one strike, streak reset). **Three strikes lose the seat.**
+- A reason needs a category, an explanation and proof. The Coach (or the Admin) accepts it (day excused, streak paused) or rejects it (one strike, streak reset). **Three strikes lose the seat.**
 - **Closing the day.** A Vercel cron calls `/api/cron/daily` once a day between 00:30 and 01:30 IST. For the day just ended:
   - An athlete who logged every task gets **+1 to their streak**.
   - An athlete who missed a task without sending a reason **loses the seat**.
@@ -84,7 +92,7 @@ cp .env.example .env.local   # fill in your Supabase values
 npm run dev                  # http://localhost:3000
 ```
 
-`npm run build` runs the type check and the production build.
+`npm run build` runs the type check and the production build. `supabase/tests/run.sh` tests the database rules on a throwaway local Postgres.
 
 ## Notes
 

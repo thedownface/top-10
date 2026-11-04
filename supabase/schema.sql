@@ -62,6 +62,9 @@ create table if not exists public.extra_tasks (
   created_at timestamptz not null default now()
 );
 create index if not exists extra_tasks_date_idx on public.extra_tasks (for_date);
+-- user_id null = for all of the Ten; set = a personal task from the Coach.
+alter table public.extra_tasks add column if not exists user_id uuid references public.profiles(id) on delete cascade;
+alter table public.extra_tasks add column if not exists source text not null default 'admin' check (source in ('admin', 'coach'));
 
 create table if not exists public.task_logs (
   id bigint generated always as identity primary key,
@@ -79,6 +82,9 @@ create table if not exists public.task_logs (
   reviewed_at timestamptz,
   unique (user_id, log_date, task_key)
 );
+alter table public.task_logs add column if not exists ai_verdict text check (ai_verdict in ('accept', 'reject', 'unsure'));
+alter table public.task_logs add column if not exists ai_note text check (char_length(ai_note) <= 300);
+alter table public.task_logs add column if not exists reviewed_by text check (reviewed_by in ('admin', 'coach'));
 create index if not exists task_logs_status_idx on public.task_logs (status) where status = 'review';
 create index if not exists task_logs_date_idx on public.task_logs (log_date);
 
@@ -198,7 +204,8 @@ create policy "invites admin" on public.invites for select to authenticated usin
 revoke insert, update, delete on public.invites from authenticated;
 
 drop policy if exists "extras read" on public.extra_tasks;
-create policy "extras read" on public.extra_tasks for select to authenticated using (true);
+create policy "extras read" on public.extra_tasks for select to authenticated
+  using (user_id is null or user_id = auth.uid() or public.is_admin());
 drop policy if exists "extras admin insert" on public.extra_tasks;
 create policy "extras admin insert" on public.extra_tasks for insert to authenticated with check (public.is_admin());
 drop policy if exists "extras admin delete" on public.extra_tasks;
@@ -265,7 +272,8 @@ returns text language sql stable security definer set search_path = public as $$
   with req as (
     select k from unnest(array['1', '2', '3', '4', '5', '6']) as k
     union all
-    select 'x' || e.id from extra_tasks e where e.for_date = p_date and p_with_extras
+    select 'x' || e.id from extra_tasks e
+    where e.for_date = p_date and p_with_extras and (e.user_id is null or e.user_id = p_uid)
   ), st as (
     select r.k, l.status
     from req r
@@ -413,7 +421,8 @@ begin
     end if;
   elsif p_task like 'x%' then
     if v_me.role <> 'athlete' then raise exception 'Extra tasks are for the Ten.'; end if;
-    select * into v_extra from extra_tasks where id::text = substr(p_task, 2) and for_date = v_d;
+    select * into v_extra from extra_tasks
+    where id::text = substr(p_task, 2) and for_date = v_d and (user_id is null or user_id = v_me.id);
     if v_extra.id is null then raise exception 'Unknown task.'; end if;
     if p_media is null then raise exception 'Add the proof first.'; end if;
   else
@@ -434,7 +443,8 @@ begin
   if v_me.id is null then raise exception 'Sign in first.'; end if;
   if v_me.role not in ('athlete', 'queue') then raise exception 'Only the Ten and trial members log tasks.'; end if;
   if p_task not in ('1', '2', '3', '4', '5', '6')
-     and not (p_task like 'x%' and exists (select 1 from extra_tasks where id::text = substr(p_task, 2) and for_date = v_d)) then
+     and not (p_task like 'x%' and exists (select 1 from extra_tasks where id::text = substr(p_task, 2) and for_date = v_d
+                                          and (user_id is null or user_id = v_me.id))) then
     raise exception 'Unknown task.';
   end if;
   if exists (select 1 from task_logs where user_id = v_me.id and log_date = v_d and task_key = p_task) then
@@ -507,7 +517,7 @@ $$;
 create or replace function public.require_admin() returns void
 language plpgsql stable security definer set search_path = public as $$
 begin
-  if not is_admin() then raise exception 'Admin only.'; end if;
+  if not (is_admin() or is_service()) then raise exception 'Admin only.'; end if;
 end $$;
 
 create or replace function public.admin_create_invite(p_seat int)
@@ -546,7 +556,9 @@ begin
   perform require_admin();
   select * into v_log from task_logs where id = p_log and status = 'review' for update;
   if v_log.id is null then raise exception 'Already reviewed.'; end if;
-  update task_logs set status = case when p_accept then 'excused' else 'rejected' end, reviewed_at = now() where id = p_log;
+  update task_logs set status = case when p_accept then 'excused' else 'rejected' end, reviewed_at = now(),
+         reviewed_by = case when is_service() then 'coach' else 'admin' end
+  where id = p_log;
   if p_accept then return; end if;
 
   select * into v_me from profiles where id = v_log.user_id for update;
@@ -610,6 +622,24 @@ begin
   return n;
 end $$;
 
+-- Gives each open seat to the next person who finished the trial, first in first seated.
+create or replace function public.fill_seats()
+returns int language plpgsql security definer set search_path = public as $$
+declare v_seat int; v_uid uuid; n int := 0;
+begin
+  if not (is_service() or is_admin()) then raise exception 'Admin only.'; end if;
+  for v_seat in select s from generate_series(1, 10) s where not exists (select 1 from profiles where seat = s) order by s loop
+    select id into v_uid from profiles
+    where role = 'queue' and trial_done_at is not null
+    order by trial_done_at, created_at limit 1;
+    exit when v_uid is null;
+    perform take_seat(v_uid, v_seat::smallint);
+    update profiles set onboarded = true where id = v_uid;
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+
 -- ── function permissions ──────────────────────────────────────────────
 revoke execute on all functions in schema public from public, anon, authenticated;
 grant execute on function
@@ -619,9 +649,12 @@ grant execute on function
   public.log_task(text, text, text, int, int), public.submit_reason(text, int, text, text, boolean),
   public.create_post(text), public.feed(timestamptz, int, boolean),
   public.admin_create_invite(int), public.admin_assign_seat(uuid, int), public.admin_remove(uuid, text),
-  public.admin_review(bigint, boolean), public.close_pending()
+  public.admin_review(bigint, boolean), public.close_pending(), public.fill_seats()
 to authenticated;
-grant execute on function public.close_pending(), public.ist_today() to service_role;
+grant execute on function
+  public.close_pending(), public.fill_seats(), public.admin_review(bigint, boolean),
+  public.ist_today(), public.the_ten()
+to service_role;
 -- Internal helpers (day_state, take_seat, remove_athlete, after_log, close_day, require_admin)
 -- stay callable only from inside the functions above.
 
